@@ -169,14 +169,41 @@ def standardize_date(date: str) -> str:
         date = date.replace(abbr, full)
     return date
 
+def deduplicate_columns(columns):
+    """
+    Toma una lista de nombres de columnas y añade un sufijo _N
+    a cualquier nombre duplicado para hacerlos únicos.
+    """
+    new_cols = []
+    counts = {}
+    for col in columns:
+        if col in counts:
+            counts[col] += 1
+            new_cols.append(f"{col}_{counts[col]}")
+        else:
+            counts[col] = 0
+            new_cols.append(col)
+    return new_cols
+
 def get_datetime_index_dates_from_statement(soup: BeautifulSoup) -> pd.DatetimeIndex:
+    """Extracts datetime index dates from the HTML soup object."""
     table_headers = soup.find_all("th", {"class": "th"})
     dates = [str(th.div.string) for th in table_headers if th.div and th.div.string]
     dates = [standardize_date(date).replace(".", "") for date in dates]
     index_dates = pd.to_datetime(dates, errors='coerce').dropna()
+    
+    # --- ¡ARREGLO PARA EL ERROR DE ÍNDICE! ---
+    # Si hay fechas duplicadas, elimínalas (manteniendo la primera)
+    if index_dates.duplicated().any():
+        index_dates = index_dates[~index_dates.duplicated(keep='first')]
+    # --- FIN DEL ARREGLO ---
+            
     return index_dates
 
 def parse_table_from_file(cik, accession_number, file_name, headers, label_dict=None):
+    """
+    Parses a single financial table (statement or disclosure) given its direct file name.
+    """
     session = requests.Session()
     base_link = f"https://www.sec.gov/Archives/edgar/data/{cik}/{accession_number}"
     table_link = f"{base_link}/{file_name}"
@@ -184,20 +211,23 @@ def parse_table_from_file(cik, accession_number, file_name, headers, label_dict=
     try:
         response = session.get(table_link, headers=headers)
         response.raise_for_status()
+        
         if table_link.endswith(".xml"):
             soup = BeautifulSoup(response.content, "lxml-xml", from_encoding="utf-8")
         else:
             soup = BeautifulSoup(response.content, "lxml")
+            
     except requests.RequestException as e:
         print(f"Error fetching table {file_name}: {e}")
         return pd.DataFrame() 
 
     columns = []
     values_set = []
+    
     date_time_index = get_datetime_index_dates_from_statement(soup)
     if date_time_index.empty:
-         print(f"Could not find dates in table {file_name}")
-         return pd.DataFrame()
+         # print(f"Could not find dates in table {file_name}") # Comentado para reducir logs
+         return pd.DataFrame() 
 
     for table in soup.find_all("table"):
         for row in table.select("tr"):
@@ -208,6 +238,7 @@ def parse_table_from_file(cik, accession_number, file_name, headers, label_dict=
             onclick_attr = onclick_elements[0]["onclick"]
             column_title = onclick_attr.split("defref_")[-1].split("',")[0]
             columns.append(column_title)
+
             values = [np.nan] * len(date_time_index)
 
             for i, cell in enumerate(row.select("td.text, td.nump, td.num")):
@@ -215,7 +246,9 @@ def parse_table_from_file(cik, accession_number, file_name, headers, label_dict=
                     continue
                 if i >= len(values): 
                     break
+                    
                 value_text = cell.text.strip()
+                
                 value_text = value_text.replace(",", "")
                 if ("($ " in value_text or "$ (" in value_text) and ")" in value_text:
                     value_text = "-" + value_text.replace("$", "").replace("(", "").replace(")", "").strip()
@@ -225,6 +258,7 @@ def parse_table_from_file(cik, accession_number, file_name, headers, label_dict=
                     value_text = "-" + value_text.replace("(", "").replace(")", "")
                 else:
                     value_text = value_text.replace("$", "").replace("¥", "")
+
                 try:
                     if value_text:
                         values[i] = float(value_text)
@@ -232,22 +266,33 @@ def parse_table_from_file(cik, accession_number, file_name, headers, label_dict=
                         values[i] = np.nan
                 except ValueError:
                     values[i] = np.nan
+
             values_set.append(values)
 
     if not values_set: 
         return pd.DataFrame()
+        
+    # --- ¡ARREGLO PARA EL ERROR DE COLUMNAS! ---
+    # Llama a la nueva función para asegurar columnas únicas
+    unique_columns = deduplicate_columns(columns)
+    # --- FIN DEL ARREGLO ---
+    
     transposed_values_set = list(zip(*values_set))
+    
     if len(transposed_values_set) != len(date_time_index):
         print(f"Data length mismatch in {file_name}. Index: {len(date_time_index)}, Data: {len(transposed_values_set)}")
         min_len = min(len(transposed_values_set), len(date_time_index))
         transposed_values_set = transposed_values_set[:min_len]
         date_time_index = date_time_index[:min_len]
 
-    df = pd.DataFrame(transposed_values_set, columns=columns, index=date_time_index)
+    # Usa las columnas únicas para crear el DataFrame
+    df = pd.DataFrame(transposed_values_set, columns=unique_columns, index=date_time_index)
     df.columns = df.columns.str.replace("us-gaap_", "", regex=False)
     df.columns = df.columns.str.replace("ifrs-full_", "", regex=False)
+    
     if label_dict:
         df.columns = df.columns.map(lambda x: label_dict.get(x.split("_", 1)[-1], x))
+        
     return df
 
 #
