@@ -7,7 +7,6 @@ Original file is located at
 https://colab.research.google.com/drive/1n-N8jmbOxmTTMuD701iYdTp8HLMCoPcM
 """
 
-#
 # ----- 1. PEGA AQUÍ TODOS TUS IMPORTS -----
 #
 import pandas as pd
