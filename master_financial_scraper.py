@@ -159,3 +159,34 @@ def run_financial_analysis(request_data):
             final_results[ticker] = {"error": str(e)}
 
     return final_results
+
+#
+# ----- 5. ESTE ES EL ENVOLTORIO DE FLASK (EL SERVIDOR WEB) -----
+#
+app = Flask(__name__)
+
+# Esta es la ruta que n8n llamará (ej. ...onrender.com/run)
+@app.route('/run', methods=['POST'])
+def handler():
+    try:
+        # 1. Obtiene el JSON que n8n envía
+        request_data = request.json
+        
+        # 2. Llama a tu función principal de lógica
+        result = run_financial_analysis(request_data)
+        
+        # 3. Comprueba si la función devolvió un error
+        if isinstance(result, dict) and result.get("status_code") == 500:
+            return jsonify(result), 500
+            
+        # 4. Devuelve el resultado como un JSON exitoso
+        return jsonify(result), 200
+
+    except Exception as e:
+        # Captura cualquier error inesperado
+        return jsonify({"error": f"Flask wrapper error: {str(e)}"}), 500
+
+# Esta línea es necesaria para que Render inicie el servidor
+if __name__ == "__main__":
+    # Render usa Gunicorn, así que esto es solo para pruebas locales
+    app.run(host='0.0.0.0', port=5000)
